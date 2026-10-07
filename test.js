@@ -1,4 +1,4 @@
-/* Kiểm thử tự động: luật + luồng online (chạy: npm test) */
+/* Kiểm thử tự động: luật + máy (AI) + luồng online (chạy: npm test) */
 'use strict';
 const assert = require('assert');
 const { spawn } = require('child_process');
@@ -102,6 +102,129 @@ for (let i = 0; i < 20; i++) {
   }
 }
 console.log('✓ Luật cờ úp OK (xáo trộn, đi theo vị trí, lật, ăn lộ quân, Sĩ/Tượng qua sông)');
+
+// ---- 1c. Chơi với máy (AI) ----
+const AI = require('./public/ai.js');
+const randPick = (a) => a[Math.floor(Math.random() * a.length)];
+const posOf = (G) => ({ board: XQ.publicBoard(G.board), turn: G.turn, captured: G.captured, variant: G.variant, moveCount: G.history.length, prevBoards: AI.recentBoards(G) });
+const isLegalMove = (G, mv) => mv && XQ.isLegal(G.board, G.turn, mv.from, mv.to);
+// sinh nước của máy == luật (trên bản che danh tính)
+{
+  const eng = AI.createEngine(); let n = 0;
+  for (const variant of ['normal', 'up']) for (let gi = 0; gi < 25; gi++) {
+    const G = new XQ.Game({ variant });
+    for (let k = 0; k < 80 && G.status === 'playing'; k++) {
+      eng.load(posOf(G));
+      const a = eng.legalRootMoves().map((m) => m.from + '>' + m.to).sort();
+      const b = XQ.allLegalMoves(G.board, G.turn).map((m) => m.from + '>' + m.to).sort();
+      assert.deepStrictEqual(a, b, 'bộ sinh nước của máy khớp luật'); n++;
+      const m = randPick(XQ.allLegalMoves(G.board, G.turn)); G.move(m.from, m.to);
+    }
+  }
+}
+// 1) máy luôn trả về nước hợp lệ (nhiều thế cờ ngẫu nhiên, cả 3 mức, thường + cờ úp)
+{
+  const eng = AI.createEngine(); let n = 0;
+  const lv = [['easy', {}], ['medium', { maxDepth: 2 }], ['hard', { timeMs: 40 }]];
+  for (const variant of ['normal', 'up']) for (let gi = 0; gi < 30; gi++) {
+    const G = new XQ.Game({ variant });
+    const plies = Math.floor(Math.random() * 90);
+    for (let k = 0; k < plies && G.status === 'playing'; k++) { const m = randPick(XQ.allLegalMoves(G.board, G.turn)); G.move(m.from, m.to); }
+    if (G.status !== 'playing') continue;
+    for (const [level, o] of lv) {
+      const before = JSON.stringify(G.board);
+      const r = eng.think(posOf(G), { level, ...o });
+      assert.ok(isLegalMove(G, r.move), `máy (${level}, ${variant}) đi nước hợp lệ`);
+      assert.strictEqual(JSON.stringify(G.board), before, 'máy không sửa bàn cờ');
+      n++;
+    }
+  }
+  // hết nước đi -> trả về null
+  const em = empty(); em[0][3] = 'bK'; em[9][5] = 'rK'; em[1][0] = 'rR'; em[0][8] = 'rR';
+  assert.strictEqual(eng.think({ board: em, turn: 'b', captured: { r: [], b: [] } }, { level: 'hard', timeMs: 50 }).move, null);
+  console.log(`✓ Máy luôn đi nước hợp lệ (${n} thế cờ ngẫu nhiên, 3 mức, thường + cờ úp)`);
+}
+// 2) thấy chiếu bí 1 nước ở mức Trung bình / Khó
+{
+  const mates = [];
+  let q = empty(); q[0][3] = 'bK'; q[9][5] = 'rK'; q[1][0] = 'rR'; q[5][8] = 'rR'; mates.push({ board: q, turn: 'r', variant: 'normal' });
+  q = empty(); q[0][3] = 'bK'; q[9][5] = 'rK'; q[8][0] = 'bR'; q[4][8] = 'bR'; q[6][2] = 'rN'; mates.push({ board: q, turn: 'b', variant: 'normal' });
+  // thế cờ thu thập từ các ván ngẫu nhiên có nước chiếu bí ngay (cờ úp: chỉ tính khi nước chiếu bí không do quân úp đi)
+  const mateMoves = (b, c, variant) => XQ.allLegalMoves(b, c).filter((m) => {
+    if (variant === 'up' && XQ.isDown(b[m.from[1]][m.from[0]])) return false;
+    const nb = XQ.applyMove(b, m.from, m.to);
+    return XQ.inCheck(nb, XQ.other(c)) && XQ.allLegalMoves(nb, XQ.other(c)).length === 0;
+  });
+  for (const variant of ['normal', 'up']) {
+    let found = 0;
+    for (let gi = 0; gi < 400 && found < 8; gi++) {
+      const G = new XQ.Game({ variant });
+      while (G.status === 'playing' && G.history.length < 200) {
+        if (G.history.length > 6 && mateMoves(G.board, G.turn, variant).length) { mates.push({ board: XQ.cloneBoard(G.board), turn: G.turn, variant, captured: JSON.parse(JSON.stringify(G.captured)) }); found++; break; }
+        const m = randPick(XQ.allLegalMoves(G.board, G.turn)); G.move(m.from, m.to);
+      }
+    }
+    assert.ok(found >= 3, 'thu thập được thế chiếu bí ' + variant);
+  }
+  for (const level of ['medium', 'hard']) for (const M of mates) {
+    assert.ok(mateMoves(M.board, M.turn, M.variant).length > 0);
+    const r = AI.think({ board: XQ.publicBoard(M.board), turn: M.turn, captured: M.captured || { r: [], b: [] }, variant: M.variant }, { level });
+    const G = new XQ.Game({ variant: M.variant, board: M.board }); G.turn = M.turn;
+    assert.ok(G.move(r.move.from, r.move.to).ok);
+    assert.deepStrictEqual([G.status, G.result && G.result.reason], ['over', 'checkmate'], `mức ${level} phải chiếu bí ngay (${M.variant})`);
+  }
+  console.log(`✓ Trung bình / Khó luôn thấy chiếu bí 1 nước (${mates.length} thế cờ)`);
+}
+// 3) cờ úp: máy không biết danh tính quân úp – hai thế chỉ khác danh tính quân úp cho cùng một nước (cùng seed)
+{
+  let n = 0, differ = 0;
+  for (let gi = 0; gi < 24; gi++) {
+    const G = new XQ.Game({ variant: 'up' });
+    const plies = 4 + Math.floor(Math.random() * 30);
+    for (let k = 0; k < plies && G.status === 'playing'; k++) { const m = randPick(XQ.allLegalMoves(G.board, G.turn)); G.move(m.from, m.to); }
+    if (G.status !== 'playing') continue;
+    // hoán đổi ngẫu nhiên danh tính các quân còn úp của mỗi bên
+    const alt = XQ.cloneBoard(G.board);
+    for (const c of ['r', 'b']) {
+      const sq = [], ids = [];
+      for (let y = 0; y < 10; y++) for (let x = 0; x < 9; x++) { const p = alt[y][x]; if (p && p[0] === c && XQ.isDown(p)) { sq.push([x, y]); ids.push(p[3]); } }
+      for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [ids[i], ids[j]] = [ids[j], ids[i]]; }
+      ids.reverse();
+      sq.forEach(([x, y], i) => { alt[y][x] = alt[y][x].slice(0, 3) + ids[i]; });
+    }
+    if (JSON.stringify(alt) !== JSON.stringify(G.board)) differ++;
+    for (const [level, o] of [['easy', {}], ['medium', { timeMs: 1e9 }], ['hard', { maxDepth: 3, timeMs: 1e9 }]]) {
+      const seed = 1000 + gi;
+      const base = { turn: G.turn, captured: G.captured, variant: 'up', moveCount: G.history.length };
+      const r1 = AI.createEngine().think({ ...base, board: G.board }, { level, seed, ...o });   // bàn có danh tính thật
+      const r2 = AI.createEngine().think({ ...base, board: alt }, { level, seed, ...o });       // danh tính khác
+      const r3 = AI.createEngine().think({ ...base, board: XQ.publicBoard(G.board) }, { level, seed, ...o }); // bản che
+      assert.deepStrictEqual([r1.move, r1.score], [r2.move, r2.score], `máy (${level}) không phụ thuộc danh tính quân úp`);
+      assert.deepStrictEqual([r1.move, r1.score], [r3.move, r3.score]);
+      n++;
+    }
+  }
+  assert.ok(differ > 10);
+  assert.ok(!JSON.stringify(AI.aiView(XQ.initialBoardUp())).match(/\?[KABRNCP]/), 'aiView che danh tính');
+  console.log(`✓ Cờ úp: máy không đọc danh tính quân úp (${n} cặp thế cờ cho cùng nước đi)`);
+}
+// 4) mức Khó tôn trọng giới hạn thời gian (~1,5 giây)
+{
+  const G1 = new XQ.Game(); for (const [f, t] of [[[7, 7], [4, 7]], [[7, 0], [6, 2]], [[7, 9], [6, 7]], [[8, 0], [7, 0]]]) assert.ok(G1.move(f, t).ok);
+  const G2 = new XQ.Game({ variant: 'up' });
+  const G3 = new XQ.Game(); for (let k = 0; k < 30 && G3.status === 'playing'; k++) { const r = AI.think(posOf(G3), { level: 'hard', timeMs: 30 }); G3.move(r.move.from, r.move.to); }
+  for (const G of [G1, G2, G3]) {
+    if (G.status !== 'playing') continue;
+    const t0 = Date.now();
+    const r = AI.think(posOf(G), { level: 'hard' });
+    const dt = Date.now() - t0;
+    assert.ok(isLegalMove(G, r.move));
+    assert.ok(dt <= AI.LEVELS.hard.timeMs + 600, `Khó vượt thời gian: ${dt}ms`);
+    assert.ok(r.depth >= 4 || r.score > 29000 || r.score < -29000, 'Khó tìm đủ sâu (độ sâu ' + r.depth + ')');
+    console.log(`  Khó: ${G.variant}, độ sâu ${r.depth}, ${r.nodes} thế cờ, ${dt}ms`);
+  }
+  console.log('✓ Mức Khó dừng đúng giới hạn thời gian');
+}
 
 // ---- 2. Online ----
 const PORT = 3999;
