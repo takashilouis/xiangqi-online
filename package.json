@@ -1,0 +1,14 @@
+{
+  "name": "xiangqi-online",
+  "version": "1.0.0",
+  "description": "Cờ tướng online + cờ tướng mù (fog of war)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "license": "MIT"
+}
