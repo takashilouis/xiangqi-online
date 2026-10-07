@@ -68,7 +68,7 @@ body{font-family:"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;color:var(-
 .room-code{font-family:monospace;font-size:26px;letter-spacing:.2em;color:var(--red)}
 .badges{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
 .badge{font-size:12px;padding:3px 9px;border-radius:12px;background:#eadbc2;font-weight:600}
-.badge.blind{background:#2a1a0e;color:#ffd27a}
+.badge.up{background:#2a1a0e;color:#ffd27a}
 .status{background:var(--card);border-radius:var(--radius);padding:14px 16px;font-size:17px;font-weight:700;text-align:center;box-shadow:0 6px 24px rgba(0,0,0,.35)}
 .status.check{background:#ffe0d6;color:var(--red);animation:pulse 1s infinite alternate}
 .status.good{background:#dff4e6;color:var(--good)}.status.bad{background:#ffe0d6;color:var(--bad)}
@@ -81,7 +81,7 @@ body{font-family:"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;color:var(-
 .moves li{padding:2px 0;border-bottom:1px dashed #e4d4b8}
 .moves .mv{display:inline-block;min-width:110px;padding:0 4px;border-radius:4px}
 .moves .mv.r{color:var(--red)}.moves .mv.b{color:#111}
-.moves .mv.hid{color:#999;font-style:italic}
+.moves .mv.flip{font-style:italic}
 .moves li:last-child .mv:last-child{background:#f3e0bb}
 .chat-log{height:120px;overflow-y:auto;font-size:14px;background:#fff;border-radius:8px;padding:6px 8px;margin-bottom:8px}
 .chat-log .m b.r{color:var(--red)}.chat-log .m b.b{color:#111}
@@ -106,13 +106,16 @@ body{font-family:"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;color:var(-
 .lost{fill:none;stroke:#d12f1f;stroke-width:3;pointer-events:none}
 .checkglow{fill:none;stroke:#ff2a1a;stroke-width:4;pointer-events:none;animation:blink .8s infinite alternate}
 @keyframes blink{from{opacity:1}to{opacity:.25}}
-.ghost circle{fill:rgba(60,60,60,.25);stroke:#555;stroke-dasharray:4 3;stroke-width:2}
-.ghost text{font-size:24px;fill:#444;text-anchor:middle;dominant-baseline:central;font-weight:700}
-.ghost{pointer-events:none}
-
-.cover{position:absolute;inset:0;background:rgba(30,18,10,.94);border-radius:8px;display:grid;place-items:center;z-index:5}
-.cover-box{text-align:center;color:#f3e3c3;padding:20px}
-.cover-title{font-size:30px;font-weight:800;margin-bottom:8px}
+/* Cờ úp: mặt lưng quân úp */
+.piece.down.r .disc{fill:url(#backR)}.piece.down.b .disc{fill:url(#backB)}
+.piece.down .disc{stroke:#e8c46a!important;stroke-width:2.5}
+.piece.down.sel .disc{stroke:#ffe14d!important;stroke-width:4}
+.piece.down .ring{stroke:#e8c46a!important;stroke-width:1.3;opacity:.85}
+.piece.down .pat{stroke:#e8c46a;stroke-width:1.2;opacity:.6}
+.piece.down .dot{fill:#e8c46a}
+.piece.down text.ghostchar{fill:#fff!important;opacity:.75;font-size:26px}
+.flipin{transform-box:fill-box;transform-origin:center;animation:flipin .55s ease-out}
+@keyframes flipin{0%{transform:scaleX(1)}45%{transform:scaleX(0)}100%{transform:scaleX(1)}}
 
 #toasts{position:fixed;top:14px;left:50%;transform:translateX(-50%);display:flex;flex-direction:column;gap:8px;z-index:50;pointer-events:none}
 .toast{background:#2a1a0e;color:#fff;padding:10px 18px;border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.4);font-weight:600;animation:tin .25s}

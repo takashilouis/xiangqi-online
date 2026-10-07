@@ -29,6 +29,80 @@ assert.strictEqual(XQ.notation(b0, [7, 9], [6, 7]), 'M2.3');
 assert.strictEqual(XQ.notation(b0, [1, 0], [2, 2]), 'M2.3');
 console.log('✓ Luật cờ OK');
 
+// ---- 1b. Cờ úp ----
+const START = XQ.initialBoard();
+const sortStr = (a) => a.slice().sort().join('');
+let nonTrivial = 0;
+for (let i = 0; i < 200; i++) {
+  const u = XQ.initialBoardUp();
+  for (let y = 0; y < 10; y++) for (let x = 0; x < 9; x++) {
+    const p = u[y][x], s0 = START[y][x];
+    if (!s0) { assert.strictEqual(p, null); continue; }
+    if (s0[1] === 'K') { assert.strictEqual(p, s0, 'Tướng giữ nguyên, ngửa'); continue; }
+    assert.ok(XQ.isDown(p) && p.length === 4, 'quân úp');
+    assert.strictEqual(p.slice(0, 2), s0, 'màu + loại theo vị trí xuất phát');
+    if (p[3] !== s0[1]) nonTrivial++;
+  }
+  for (const c of ['r', 'b']) {
+    const types = u.flat().filter((p) => p && p[0] === c && p[1] !== 'K').map((p) => p[3]);
+    assert.strictEqual(sortStr(types), sortStr([...'AABBRRNNCCPPPPP']), 'đủ 15 quân mỗi bên');
+  }
+}
+assert.ok(nonTrivial > 1000, 'thực sự xáo trộn');
+// rand xác định (đảo ngược) -> kiểm tra hàm rand được dùng
+assert.ok(XQ.initialBoardUp(() => 0).flat().some((p) => p && p.length === 4 && p[1] !== p[3]));
+// quân úp đi theo loại của ô đứng
+const mv = (b, x, y) => XQ.pseudoMoves(b, x, y).map(String).sort();
+const one = (x, y, p) => { const q = empty(); q[y][x] = p; return q; };
+assert.strictEqual(XQ.pseudoMoves(one(0, 9, 'rR?P'), 0, 9).length, 17, 'ô Xe đi như Xe');
+assert.deepStrictEqual(mv(one(0, 6, 'rP?R'), 0, 6), ['0,5'], 'ô Tốt đi như Tốt chưa qua sông');
+assert.deepStrictEqual(mv(one(3, 9, 'rA?R'), 3, 9), ['4,8'], 'ô Sĩ: chỉ trong cung');
+assert.deepStrictEqual(mv(one(2, 9, 'rB?R'), 2, 9), ['0,7', '4,7'], 'ô Tượng đi như Tượng');
+assert.deepStrictEqual(mv(one(1, 9, 'rN?C'), 1, 9), ['0,7', '2,7', '3,8'], 'ô Mã đi như Mã');
+b = empty(); b[7][1] = 'rC?R'; b[5][1] = 'bP'; b[2][1] = 'bC?N'; b[9][3] = 'rK'; b[0][4] = 'bK'; b[3][8] = 'bR';
+assert.ok(XQ.isLegal(b, 'r', [1, 7], [1, 2]), 'ô Pháo: ăn bằng cách nhảy ngòi');
+assert.ok(!XQ.isLegal(b, 'r', [1, 7], [1, 5]), 'ô Pháo: không ăn trực tiếp');
+// lật khi đi + ăn quân úp lộ danh tính
+g = new XQ.Game(); g.board = b;
+let r = g.move([1, 7], [1, 2]); assert.ok(r.ok);
+assert.strictEqual(g.board[2][1], 'rR!', 'đi xong lật thành quân thật (Xe)');
+assert.deepStrictEqual(g.captured.r, ['bN'], 'ăn quân úp -> lộ là Mã');
+assert.match(r.move.text, /^P.*\(Xe\)$/, 'ký hiệu ghi quân vừa lật');
+assert.strictEqual(r.move.revealed, 'R');
+// sau khi lật đi theo quân thật: Xe ở (1,2) đi ngang được
+assert.ok(XQ.pseudoMoves(g.board, 1, 2).some(([x, y]) => y === 2 && x === 8));
+// Sĩ / Tượng đã lật được qua sông, ra khỏi cung
+assert.deepStrictEqual(mv(one(4, 5, 'rA!'), 4, 5), ['3,4', '3,6', '5,4', '5,6']);
+assert.deepStrictEqual(mv(one(4, 5, 'rB!'), 4, 5), ['2,3', '2,7', '6,3', '6,7']);
+b = one(4, 5, 'rB!'); b[4][3] = 'bP';
+assert.deepStrictEqual(XQ.pseudoMoves(b, 4, 5).map(String).sort(), ['2,7', '6,3', '6,7'], 'Tượng lật vẫn bị chặn mắt');
+assert.ok(XQ.pseudoMoves(one(4, 5, 'rA'), 4, 5).length === 0, 'cờ thường: Sĩ không ra khỏi cung');
+b = empty(); b[0][4] = 'bK'; b[9][3] = 'rK'; b[1][3] = 'rA!';
+assert.ok(XQ.inCheck(b, 'b'), 'Sĩ đã lật vào cung địch có thể chiếu');
+// Tốt lật: chưa qua sông chỉ tiến, qua sông đi ngang
+assert.deepStrictEqual(mv(one(4, 7, 'rP!'), 4, 7), ['4,6']);
+assert.strictEqual(XQ.pseudoMoves(one(4, 4, 'rP!'), 4, 4).length, 3);
+// che danh tính
+assert.strictEqual(XQ.publicPiece('rC?N'), 'rC?'); assert.strictEqual(XQ.publicPiece('rN!'), 'rN!');
+// chơi lại được từ cùng thế ban đầu (nút "Đi lại")
+const gu = new XQ.Game({ variant: 'up' });
+assert.ok(gu.move([0, 9], [0, 8]).ok);
+const gu2 = new XQ.Game({ variant: 'up', board: gu.startBoard }); gu2.move([0, 9], [0, 8]);
+assert.deepStrictEqual(gu2.board, gu.board);
+// client chỉ thấy quân úp 3 ký tự: tính nước hợp lệ trên bản che = trên bản thật
+for (let i = 0; i < 20; i++) {
+  const G = new XQ.Game({ variant: 'up' });
+  for (let k = 0; k < 30 && G.status === 'playing'; k++) {
+    const pub = XQ.publicBoard(G.board);
+    const a = XQ.allLegalMoves(G.board, G.turn).map((m) => String(m.from) + '>' + m.to).sort();
+    const c = XQ.allLegalMoves(pub, G.turn).map((m) => String(m.from) + '>' + m.to).sort();
+    assert.deepStrictEqual(c, a, 'client tính đúng nước hợp lệ dù không biết danh tính');
+    const m = XQ.allLegalMoves(G.board, G.turn); const pick = m[Math.floor(Math.random() * m.length)];
+    assert.ok(G.move(pick.from, pick.to).ok);
+  }
+}
+console.log('✓ Luật cờ úp OK (xáo trộn, đi theo vị trí, lật, ăn lộ quân, Sĩ/Tượng qua sông)');
+
 // ---- 2. Online ----
 const PORT = 3999;
 const srv = spawn(process.execPath, ['server.js'], { env: { ...process.env, PORT, XQ_TEST: '1' }, stdio: 'inherit' });
@@ -36,12 +110,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function client() {
   return new Promise((res) => {
     const ws = new WebSocket(`ws://localhost:${PORT}/ws`);
-    const c = { ws, msgs: [], state: null, send: (o) => ws.send(JSON.stringify(o)) };
+    const c = { ws, msgs: [], all: [], state: null, send: (o) => ws.send(JSON.stringify(o)) };
     c.wait = (pred, ms = 2000) => new Promise((ok, bad) => {
       const t0 = Date.now();
       (function poll() { const m = c.msgs.find(pred); if (m) { c.msgs.splice(c.msgs.indexOf(m), 1); return ok(m); } if (Date.now() - t0 > ms) return bad(new Error('timeout')); setTimeout(poll, 20); })();
     });
-    ws.on('message', (d) => { const m = JSON.parse(d); if (m.t === 'state') c.state = m; c.msgs.push(m); });
+    ws.on('message', (d) => { const m = JSON.parse(d); if (m.t === 'state') c.state = m; c.msgs.push(m); c.all.push(m); });
     ws.on('open', () => res(c));
   });
 }
@@ -50,51 +124,64 @@ const count = (board, color) => board.flat().filter((p) => p && p[0] === color).
 (async () => {
   await sleep(500);
   try {
-    // phòng mù
+    // phòng cờ úp
     const A = await client(), B = await client();
-    A.send({ t: 'create', name: 'An', color: 'r', blind: true });
+    A.send({ t: 'create', name: 'An', color: 'r', variant: 'up' });
     const j = await A.wait((m) => m.t === 'joined');
     B.send({ t: 'join', code: j.code, name: 'Bình' });
     const jb = await B.wait((m) => m.t === 'joined'); assert.strictEqual(jb.color, 'b');
     await sleep(150);
-    assert.strictEqual(A.state.status, 'playing');
-    assert.strictEqual(count(A.state.board, 'r'), 16); assert.strictEqual(count(A.state.board, 'b'), 0, 'Đỏ không thấy quân Đen');
-    assert.strictEqual(count(B.state.board, 'b'), 16); assert.strictEqual(count(B.state.board, 'r'), 0, 'Đen không thấy quân Đỏ');
+    assert.strictEqual(A.state.status, 'playing'); assert.strictEqual(A.state.variant, 'up');
+    const LEAK = /[rb][KABRNCP]\?[KABRNCP]/; // quân úp kèm danh tính thật
+    const noLeak = (cl) => { for (const m of cl.all) if (m.status !== 'over') assert.ok(!LEAK.test(JSON.stringify(m)), 'không lộ danh tính quân úp: ' + JSON.stringify(m).slice(0, 80)); };
+    for (const S of [A.state, B.state]) {
+      assert.strictEqual(count(S.board, 'r'), 16); assert.strictEqual(count(S.board, 'b'), 16, 'thấy đủ quân (úp) hai bên');
+      for (let y = 0; y < 10; y++) for (let x = 0; x < 9; x++) {
+        const p = S.board[y][x], s0 = START[y][x];
+        assert.strictEqual(p, s0 && (s0[1] === 'K' ? s0 : s0 + '?'), 'client chỉ thấy màu + vị trí');
+      }
+    }
     // đi sai lượt
     B.send({ t: 'move', from: [0, 3], to: [0, 4] }); await B.wait((m) => m.t === 'illegal');
-    // pháo đỏ (7,7) ăn mã đen (7,0)
+    // server kiểm tra nước: quân úp ô Pháo không được ăn trực tiếp / quân úp ô Tốt không đi ngang
+    A.send({ t: 'move', from: [0, 6], to: [1, 6] }); await A.wait((m) => m.t === 'illegal');
+    // quân úp ô Pháo (7,7) ăn quân úp ô Mã (7,0)
     A.send({ t: 'move', from: [7, 7], to: [7, 0] }); await sleep(150);
-    assert.deepStrictEqual(A.state.captured.r, ['bN']);
-    assert.strictEqual(B.state.moves[0].hidden, true, 'Đen không thấy ký hiệu nước của Đỏ');
-    assert.deepStrictEqual(B.state.lastMove, { to: [7, 0] }, 'Đen chỉ biết ô bị ăn');
-    assert.strictEqual(count(B.state.board, 'r'), 0);
-    // xe đen (8,0) ăn lại pháo
-    B.send({ t: 'move', from: [8, 0], to: [7, 0] }); await sleep(150);
-    assert.deepStrictEqual(B.state.captured.b, ['rC']);
-    // nước bị quân ẩn chặn: xe đỏ (0,9) lên (0,2) bị tốt đen (0,3) chặn
-    A.send({ t: 'move', from: [0, 9], to: [0, 2] }); await A.wait((m) => m.t === 'illegal');
-    // đầu hàng
+    const capR = A.state.captured.r;
+    assert.strictEqual(capR.length, 1); assert.match(capR[0], /^b[ABRNCP]$/, 'quân bị ăn lộ danh tính');
+    const flipped = A.state.board[0][7];
+    assert.match(flipped, /^r[ABRNCP]!$/, 'quân vừa đi đã lật');
+    assert.strictEqual(B.state.board[0][7], flipped, 'hai bên cùng thấy quân lật');
+    assert.ok(A.state.moves[0].flip && A.state.moves[0].text.includes('(' + XQ.VN_NAME[flipped[1]] + ')'));
+    // Đen đi quân úp ô Xe (8,0) xuống 1
+    B.send({ t: 'move', from: [8, 0], to: [8, 1] }); await sleep(150);
+    assert.match(B.state.board[1][8], /^b[ABRNCP]!$/);
+    noLeak(A); noLeak(B);
+    // đầu hàng -> hết ván lộ toàn bộ quân còn úp
     A.send({ t: 'resign' });
     await A.wait((m) => m.t === 'gameover'); await sleep(100);
     assert.strictEqual(A.state.status, 'over'); assert.strictEqual(A.state.result.winner, 'b'); assert.strictEqual(A.state.result.reason, 'resign');
-    assert.strictEqual(count(A.state.board, 'b'), 15, 'Hết ván lộ toàn bộ bàn');
-    // ván mới (đổi màu)
+    assert.ok(A.state.board.flat().some((p) => p && p.length === 4), 'hết ván lộ danh tính');
+    // ván mới (đổi màu, xáo lại)
+    A.all.length = 0; B.all.length = 0;
     A.send({ t: 'rematch' }); B.send({ t: 'rematch' }); await sleep(200);
     assert.strictEqual(A.state.you, 'b'); assert.strictEqual(B.state.you, 'r'); assert.strictEqual(A.state.gameNo, 2);
+    assert.ok(A.state.board.flat().filter((p) => p && p[2] === '?').length === 30, 'ván mới úp lại 30 quân');
+    noLeak(A); noLeak(B);
     // cầu hoà
     B.send({ t: 'offerDraw' }); await sleep(100); assert.strictEqual(A.state.drawOffer, 'r');
     A.send({ t: 'acceptDraw' }); await sleep(150);
     assert.strictEqual(B.state.result.reason, 'agreed');
-    console.log('✓ Phòng mù, ẩn quân, validate server, đầu hàng, ván mới, cầu hoà OK');
+    console.log('✓ Phòng cờ úp: che danh tính, server kiểm tra nước, lật quân, ăn lộ quân, đầu hàng, ván mới, cầu hoà OK');
 
     // phòng thường + chiếu hết + đảo màu + reconnect
     const C = await client(), D = await client();
-    C.send({ t: 'create', name: 'Cường', color: 'r', blind: false });
+    C.send({ t: 'create', name: 'Cường', color: 'r' });
     const jc = await C.wait((m) => m.t === 'joined');
     C.send({ t: 'swap' }); await C.wait((m) => m.t === 'joined' && m.color === 'b');
     D.send({ t: 'join', code: jc.code }); const jd = await D.wait((m) => m.t === 'joined'); assert.strictEqual(jd.color, 'r');
     await sleep(100);
-    assert.strictEqual(count(C.state.board, 'r'), 16, 'chế độ thường thấy hết');
+    assert.strictEqual(count(C.state.board, 'r'), 16); assert.deepStrictEqual(C.state.board, START, 'chế độ thường: thế cờ chuẩn'); assert.strictEqual(C.state.variant, 'normal');
     D.ws.close(); await sleep(150);
     assert.strictEqual(C.state.players.r.online, false);
     const D2 = await client(); D2.send({ t: 'resume', code: jc.code, token: jd.token });

@@ -35,9 +35,12 @@ function newCode() {
 const newToken = () => crypto.randomBytes(16).toString('hex');
 const cleanName = (s, def) => (String(s || '').replace(/[<>]/g, '').trim().slice(0, 20) || def);
 
+const newGame = (variant) => new XQ.Game({ variant, rand: (n) => crypto.randomInt(n) });
+
 function createRoom(opts) {
+  const variant = opts.variant === 'up' ? 'up' : 'normal';
   const room = {
-    code: newCode(), blind: !!opts.blind, game: new XQ.Game(),
+    code: newCode(), variant, game: newGame(variant),
     seats: { r: null, b: null }, // {token, name, ws}
     hostColor: null, started: false, drawOffer: null, rematch: { r: false, b: false },
     chat: [], lastActive: Date.now(), gameNo: 1,
@@ -48,33 +51,25 @@ function createRoom(opts) {
 
 function send(ws, obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 
-/* Tạo "góc nhìn" riêng cho từng người – chế độ mù lọc quân đối phương tại server */
+/* Tạo "góc nhìn" cho từng người. Cờ úp: danh tính quân úp CHỈ nằm ở server –
+ * client nhận 'rC?' (màu + loại theo ô đứng) cho tới khi quân được lật hoặc bị ăn. */
 function viewFor(room, color) {
   const g = room.game;
-  const hide = room.blind && g.status !== 'over' && (color === 'r' || color === 'b');
-  const opp = XQ.other(color);
-  const board = g.board.map((row) => row.map((p) => (hide && p && p[0] !== color ? null : p)));
-  const moves = g.history.map((m, i) => {
-    if (!hide || m.side === color) return { side: m.side, text: m.text, check: m.check, cap: !!m.captured };
-    return { side: m.side, text: m.captured ? '??? (ăn quân)' : '???', check: m.check, cap: !!m.captured, hidden: true };
-  });
-  let lastMove = null;
+  const over = g.status === 'over';
+  const board = over ? g.board : XQ.publicBoard(g.board); // hết ván: lộ toàn bộ quân còn úp
+  const moves = g.history.map((m) => ({ side: m.side, text: m.text, check: m.check, cap: !!m.captured, flip: !!m.revealed }));
   const lm = g.history[g.history.length - 1];
-  if (lm) {
-    if (!hide || lm.side === color) lastMove = { from: lm.from, to: lm.to };
-    else if (lm.captured) lastMove = { to: lm.to }; // chỉ biết quân mình bị ăn ở đâu
-  }
+  const lastMove = lm ? { from: lm.from, to: lm.to } : null;
   const seat = (c) => room.seats[c] ? { name: room.seats[c].name, online: !!(room.seats[c].ws && room.seats[c].ws.readyState === 1) } : null;
   return {
-    t: 'state', code: room.code, you: color, blind: room.blind, started: room.started, gameNo: room.gameNo,
+    t: 'state', code: room.code, you: color, variant: room.variant, started: room.started, gameNo: room.gameNo,
     isHost: room.seats[color] && room.hostColor === color,
     players: { r: seat('r'), b: seat('b') },
     board, turn: g.turn, moves, lastMove,
-    captured: g.captured, // quân bị mỗi bên ăn (đã lộ diện)
+    captured: g.captured, // quân bị mỗi bên ăn (đã lộ danh tính)
     inCheck: g.status === 'playing' && XQ.inCheck(g.board, g.turn) ? g.turn : null,
     status: !room.started ? 'waiting' : g.status, result: g.result,
     drawOffer: room.drawOffer, rematch: room.rematch,
-    // khi chiếu: ở chế độ mù, chỉ báo đang bị chiếu, không lộ quân chiếu
   };
 }
 
@@ -112,7 +107,7 @@ function seatIn(room, color, name, ws) {
 
 function handle(ws, msg) {
   if (msg.t === 'create') {
-    const room = createRoom({ blind: msg.blind });
+    const room = createRoom({ variant: msg.variant });
     let color = msg.color === 'b' ? 'b' : msg.color === 'r' ? 'r' : (crypto.randomInt(2) ? 'r' : 'b');
     room.hostColor = color;
     const token = seatIn(room, color, cleanName(msg.name, 'Chủ phòng'), ws);
@@ -126,7 +121,7 @@ function handle(ws, msg) {
     if (!room) return send(ws, { t: 'error', msg: `Không tìm thấy phòng "${code}"` });
     const free = !room.seats.r ? 'r' : !room.seats.b ? 'b' : null;
     if (!free) return send(ws, { t: 'error', msg: 'Phòng đã đủ 2 người' });
-    if (room.game.history.length > 0 || room.game.status === 'over') { room.game = new XQ.Game(); room.drawOffer = null; room.rematch = { r: false, b: false }; }
+    if (room.game.history.length > 0 || room.game.status === 'over') { room.game = newGame(room.variant); room.drawOffer = null; room.rematch = { r: false, b: false }; }
     const token = seatIn(room, free, cleanName(msg.name, 'Khách'), ws);
     if (!room.hostColor || !room.seats[room.hostColor]) room.hostColor = XQ.other(free);
     room.started = true; room.lastActive = Date.now();
@@ -158,10 +153,7 @@ function handle(ws, msg) {
     case 'move': {
       if (!room.started) return send(ws, { t: 'error', msg: 'Đang chờ đối thủ vào phòng' });
       const r = g.move(msg.from, msg.to, me);
-      if (!r.ok) {
-        const extra = room.blind && r.error === 'Nước đi không hợp lệ' ? ' (có thể bị quân ẩn chặn, hoặc để Tướng bị chiếu) – hãy đi lại' : '';
-        return send(ws, { t: 'illegal', msg: r.error + extra });
-      }
+      if (!r.ok) return send(ws, { t: 'illegal', msg: r.error });
       room.drawOffer = null;
       broadcast(room);
       if (g.status === 'over') announceEnd(room);
@@ -199,7 +191,7 @@ function handle(ws, msg) {
       room.rematch[me] = true;
       if (room.rematch.r && room.rematch.b) {
         swapSeats(room);
-        room.game = new XQ.Game(); room.drawOffer = null; room.rematch = { r: false, b: false }; room.gameNo++;
+        room.game = newGame(room.variant); room.drawOffer = null; room.rematch = { r: false, b: false }; room.gameNo++;
         notify(room, `Ván ${room.gameNo} bắt đầu – hai bên đã đổi màu`, 'good');
       } else {
         send(room.seats[opp] && room.seats[opp].ws, { t: 'toast', msg: 'Đối thủ muốn chơi ván mới', kind: 'info' });

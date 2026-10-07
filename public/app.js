@@ -15,8 +15,8 @@ const App = {
   view: null,          // trạng thái hiển thị (cùng cấu trúc với server)
   sel: null, targets: [],
   flip: false, userFlip: false,
-  ghosts: new Set(),
-  local: null,         // {game, blind, coverFor}
+  flipFx: null,        // {x, y, until} – hiệu ứng lật quân
+  local: null,         // {game, variant}
   prevMoveCount: 0, prevStatus: null,
   ws: null, wsOpen: false, session: null,
   createOpts: { color: 'r', mode: 'normal' },
@@ -35,6 +35,7 @@ function beep(freq = 520, dur = 0.08, type = 'sine', vol = 0.15) {
   } catch {}
 }
 const sfx = {
+  flip: () => { beep(660, 0.06, 'triangle', 0.2); setTimeout(() => beep(990, 0.08, 'triangle', 0.18), 60); },
   move: () => beep(300, 0.09, 'triangle', 0.25),
   capture: () => { beep(220, 0.12, 'square', 0.12); setTimeout(() => beep(160, 0.1, 'square', 0.1), 70); },
   check: () => { beep(880, 0.12, 'sawtooth', 0.1); setTimeout(() => beep(990, 0.15, 'sawtooth', 0.1), 130); },
@@ -94,7 +95,7 @@ function onMessage(m) {
       const changed = App.session && App.session.color !== m.color;
       App.session = { code: m.code, token: m.token, color: m.color };
       saveSession(App.session);
-      if (App.mode !== 'online' || changed) { App.ghosts.clear(); App.userFlip = false; App.prevMoveCount = -1; }
+      if (App.mode !== 'online' || changed) { App.userFlip = false; App.prevMoveCount = -1; }
       App.mode = 'online';
       history.replaceState(null, '', '?room=' + m.code);
       showGame();
@@ -107,7 +108,7 @@ function onMessage(m) {
     case 'state': {
       if (App.mode !== 'online') return;
       const prev = App.view;
-      if (prev && prev.gameNo !== m.gameNo) { App.ghosts.clear(); App.prevMoveCount = -1; }
+      if (prev && prev.gameNo !== m.gameNo) App.prevMoveCount = -1;
       App.view = m;
       afterUpdate(prev);
       break;
@@ -124,29 +125,24 @@ function onMessage(m) {
 }
 
 /* ================== Chế độ local (hotseat) ================== */
-function startLocal(blind) {
+function startLocal(variant) {
   App.mode = 'local';
-  App.local = { game: new XQ.Game(), blind, coverFor: null };
-  App.ghosts.clear(); App.userFlip = false; App.prevMoveCount = 0; App.sel = null; App.targets = [];
+  App.local = { game: new XQ.Game({ variant }), variant };
+  App.userFlip = false; App.prevMoveCount = 0; App.sel = null; App.targets = []; App.view = null;
   history.replaceState(null, '', location.pathname);
   $('chatLog').innerHTML = '';
   showGame();
-  if (blind) App.local.coverFor = 'r';
   refreshLocal();
 }
+/* Cờ úp cùng máy: giao diện chỉ dùng bản đã che danh tính quân úp (giống online) */
 function localView() {
   const L = App.local, g = L.game;
-  const viewer = g.turn;
-  const hide = L.blind && g.status === 'playing';
-  const board = g.board.map((row) => row.map((p) => (hide && p && p[0] !== viewer ? null : p)));
-  const moves = g.history.map((mv) => (hide && mv.side !== viewer
-    ? { side: mv.side, text: mv.captured ? '??? (ăn quân)' : '???', check: mv.check, hidden: true }
-    : { side: mv.side, text: mv.text, check: mv.check, cap: !!mv.captured }));
+  const over = g.status === 'over';
   const lm = g.history[g.history.length - 1];
-  let lastMove = null;
-  if (lm) lastMove = (hide && lm.side !== viewer) ? (lm.captured ? { to: lm.to } : null) : { from: lm.from, to: lm.to };
   return {
-    you: viewer, blind: L.blind, board, turn: g.turn, moves, lastMove, captured: g.captured,
+    you: g.turn, variant: L.variant, board: over ? g.board : XQ.publicBoard(g.board), turn: g.turn,
+    moves: g.history.map((mv) => ({ side: mv.side, text: mv.text, check: mv.check, cap: !!mv.captured, flip: !!mv.revealed })),
+    lastMove: lm ? { from: lm.from, to: lm.to } : null, captured: g.captured,
     inCheck: g.status === 'playing' && XQ.inCheck(g.board, g.turn) ? g.turn : null,
     status: g.status, result: g.result, started: true,
     players: { r: { name: 'Đỏ', online: true }, b: { name: 'Đen', online: true } },
@@ -156,19 +152,12 @@ function refreshLocal() {
   const prev = App.view;
   App.view = localView();
   afterUpdate(prev);
-  const L = App.local;
-  if (L.blind && L.coverFor && L.game.status === 'playing') {
-    $('coverTitle').textContent = `Lượt của ${COLOR_VN[L.coverFor]}`;
-    $('cover').classList.remove('hidden');
-  } else $('cover').classList.add('hidden');
 }
-$('coverBtn').onclick = () => { App.local.coverFor = null; $('cover').classList.add('hidden'); };
 
 function localMove(from, to) {
   const g = App.local.game;
   const r = g.move(from, to);
   if (!r.ok) { sfx.bad(); toast(r.error, 'bad'); return; }
-  if (App.local.blind && g.status === 'playing') { App.local.coverFor = g.turn; App.ghosts.clear(); }
   refreshLocal();
   if (g.status === 'over') {
     const res = g.result, reason = XQ.REASON_VN[res.reason];
@@ -181,8 +170,7 @@ function localMove(from, to) {
 function afterUpdate(prev) {
   const v = App.view;
   // tự xoay bàn theo màu của mình
-  if (!App.userFlip) App.flip = v.you === 'b';
-  if (App.mode === 'local' && !App.local.blind && !App.userFlip) App.flip = false;
+  if (!App.userFlip) App.flip = App.mode === 'online' && v.you === 'b';
   // âm thanh khi có nước mới
   const n = v.moves.length;
   if (App.prevMoveCount >= 0 && n > App.prevMoveCount) {
@@ -191,10 +179,25 @@ function afterUpdate(prev) {
       sfx.check();
       if (v.inCheck === v.you && App.mode === 'online') toast('Bạn đang bị CHIẾU TƯỚNG!', 'bad');
       else toast('Chiếu tướng!', 'warn');
-    } else if (last && (last.cap || /ăn/.test(last.text) || (v.lastMove && !v.lastMove.from))) sfx.capture();
+    } else if (last && last.cap) sfx.capture();
     else sfx.move();
+    // cờ úp: hiệu ứng lật quân + thông báo danh tính quân vừa lộ
+    if (prev && prev.board && v.lastMove && n === App.prevMoveCount + 1) {
+      const [fx, fy] = v.lastMove.from, [tx, ty] = v.lastMove.to;
+      const was = prev.board[fy][fx], victim = prev.board[ty][tx], now = v.board[ty][tx];
+      const msgs = [];
+      if (XQ.isDown(was) && now) {
+        App.flipFx = { x: tx, y: ty, until: Date.now() + 700 };
+        msgs.push(`${COLOR_VN[now[0]]} lật quân: ${XQ.VN_NAME[now[1]]}`);
+        setTimeout(sfx.flip, 120);
+      }
+      if (XQ.isDown(victim)) {
+        const caps = v.captured[last.side] || [], q = caps[caps.length - 1];
+        if (q) msgs.push(`Ăn quân úp: ${COLOR_VN[q[0]]} ${XQ.VN_NAME[q[1]]}`);
+      }
+      if (msgs.length) toast(msgs.join(' · '), 'info');
+    }
   }
-  if (n < App.prevMoveCount) App.ghosts.clear();
   App.prevMoveCount = n;
   App.sel = null; App.targets = [];
   render();
@@ -208,7 +211,6 @@ function showGame() {
 }
 function goLobby() {
   App.mode = null; App.view = null; App.session = null; App.local = null;
-  $('cover').classList.add('hidden');
   $('game').classList.add('hidden'); $('lobby').classList.remove('hidden');
   history.replaceState(null, '', location.pathname);
 }
@@ -235,6 +237,8 @@ function buildStatic() {
     <radialGradient id="pieceGrad" cx="40%" cy="35%" r="70%">
       <stop offset="0" stop-color="#fff6e0"/><stop offset=".7" stop-color="#f3dcae"/><stop offset="1" stop-color="#d9b77c"/>
     </radialGradient>
+    <radialGradient id="backR" cx="40%" cy="35%" r="75%"><stop offset="0" stop-color="#e0574a"/><stop offset="1" stop-color="#8e1712"/></radialGradient>
+    <radialGradient id="backB" cx="40%" cy="35%" r="75%"><stop offset="0" stop-color="#555"/><stop offset="1" stop-color="#111"/></radialGradient>
     <filter id="pshadow" x="-30%" y="-30%" width="160%" height="160%"><feDropShadow dx="1.5" dy="2.5" stdDeviation="1.8" flood-opacity=".45"/></filter>`;
   staticLayer = el('g', {}, svg);
   el('rect', { x: 2, y: -8, width: 556, height: 636, rx: 14, fill: 'url(#woodGrad)', stroke: '#7a4b1f', 'stroke-width': 4 }, staticLayer);
@@ -288,31 +292,21 @@ function render() {
     el('text', { x: sx, y: 6 }, lab).textContent = top === 'r' ? 9 - realB : realB + 1;
   }
   // nước đi cuối
-  if (v.lastMove) {
-    if (v.lastMove.from) for (const p of [v.lastMove.from, v.lastMove.to]) el('rect', { class: 'last', x: px(p[0]) - 28, y: py(p[1]) - 28, width: 56, height: 56, rx: 6 }, dynLayer);
-    else {
-      const p = v.lastMove.to;
-      el('circle', { class: 'lost', cx: px(p[0]), cy: py(p[1]), r: 26 }, dynLayer);
-      const t = el('text', { x: px(p[0]), y: py(p[1]), fill: '#d12f1f', 'font-size': 28, 'text-anchor': 'middle', 'dominant-baseline': 'central', 'font-weight': 800 }, dynLayer);
-      t.textContent = '✕';
-    }
-  }
-  // dấu đoán (chế độ mù)
-  if (v.blind && v.status !== 'over') for (const k of App.ghosts) {
-    const [x, y] = k.split(',').map(Number); if (v.board[y][x]) continue;
-    const g = el('g', { class: 'ghost' }, dynLayer);
-    el('circle', { cx: px(x), cy: py(y), r: 24 }, g);
-    el('text', { x: px(x), y: py(y) }, g).textContent = '?';
-  }
+  if (v.lastMove) for (const p of [v.lastMove.from, v.lastMove.to]) el('rect', { class: 'last', x: px(p[0]) - 28, y: py(p[1]) - 28, width: 56, height: 56, rx: 6 }, dynLayer);
   // quân cờ
   for (let y = 0; y < 10; y++) for (let x = 0; x < 9; x++) {
     const p = v.board[y][x]; if (!p) continue;
     const sel = App.sel && App.sel[0] === x && App.sel[1] === y;
-    const g = el('g', { class: `piece ${p[0]}${sel ? ' sel' : ''}`, transform: `translate(${px(x)},${py(y)})`, filter: 'url(#pshadow)' }, dynLayer);
-    el('circle', { class: 'disc', r: 26 }, g);
-    el('circle', { class: 'ring', r: 21.5 }, g);
-    el('text', { y: 1 }, g).textContent = CHARS[p[0]][p[1]];
-    if (v.inCheck && p === v.inCheck + 'K') el('circle', { class: 'checkglow', r: 29 }, g);
+    const down = XQ.isDown(p);
+    const outer = el('g', { class: `piece ${p[0]}${down ? ' down' : ''}${sel ? ' sel' : ''}`, transform: `translate(${px(x)},${py(y)})`, filter: 'url(#pshadow)' }, dynLayer);
+    const fx = App.flipFx && App.flipFx.x === x && App.flipFx.y === y && Date.now() < App.flipFx.until;
+    const g = el('g', { class: fx ? 'flipin' : '' }, outer);
+    if (down) drawBack(g, p); else {
+      el('circle', { class: 'disc', r: 26 }, g);
+      el('circle', { class: 'ring', r: 21.5 }, g);
+      el('text', { y: 1 }, g).textContent = CHARS[p[0]][p[1]];
+    }
+    if (v.inCheck && p === v.inCheck + 'K') el('circle', { class: 'checkglow', r: 29 }, outer);
   }
   // ô có thể đi
   for (const [x, y] of App.targets) {
@@ -324,6 +318,16 @@ function render() {
     const r = el('rect', { class: 'sq', x: px(x) - 30, y: py(y) - 30, width: 60, height: 60, 'data-x': x, 'data-y': y }, dynLayer);
   }
   renderSide();
+}
+
+/* Mặt lưng quân úp: đĩa màu của bên, hoa văn, không có chữ. Hết ván (p có 4 ký tự) thì hiện mờ quân thật. */
+function drawBack(g, p) {
+  el('circle', { class: 'disc', r: 26 }, g);
+  el('circle', { class: 'ring', r: 21 }, g);
+  el('circle', { class: 'ring', r: 13 }, g);
+  for (const a of [0, 45, 90, 135]) el('line', { class: 'pat', x1: -13, y1: 0, x2: 13, y2: 0, transform: `rotate(${a})` }, g);
+  el('circle', { class: 'dot', r: 3 }, g);
+  if (p[3]) el('text', { y: 1, class: 'ghostchar' }, g).textContent = CHARS[p[0]][p[3]];
 }
 
 /* ================== Bảng bên ================== */
@@ -352,7 +356,7 @@ function renderSide() {
   $('copyCode').classList.toggle('hidden', !online);
   $('copyLink').classList.toggle('hidden', !online);
   const badges = [];
-  badges.push(v.blind ? '<span class="badge blind">🙈 Cờ mù</span>' : '<span class="badge">👁 Thường</span>');
+  badges.push(v.variant === 'up' ? '<span class="badge up">🎴 Cờ úp</span>' : '<span class="badge">♟ Thường</span>');
   badges.push(online ? '<span class="badge">🌐 Online</span>' : '<span class="badge">👥 Cùng máy</span>');
   if (online) badges.push(`<span class="badge">Bạn: ${COLOR_VN[v.you]}</span>`);
   if (online && v.gameNo > 1) badges.push(`<span class="badge">Ván ${v.gameNo}</span>`);
@@ -395,7 +399,7 @@ function renderSide() {
   const ol = $('moves'); let html = '';
   for (let i = 0; i < v.moves.length; i += 2) {
     const a = v.moves[i], b = v.moves[i + 1];
-    const cell = (m) => m ? `<span class="mv ${m.side}${m.hidden ? ' hid' : ''}">${esc(m.text)}${m.check ? ' +' : ''}</span>` : '';
+    const cell = (m) => m ? `<span class="mv ${m.side}${m.flip ? ' flip' : ''}">${esc(m.text)}${m.check ? ' +' : ''}</span>` : '';
     html += `<li>${cell(a)}${cell(b)}</li>`;
   }
   ol.innerHTML = html;
@@ -406,7 +410,7 @@ function renderSide() {
 function canAct() {
   const v = App.view;
   if (!v || v.status !== 'playing') return false;
-  if (App.mode === 'local') return !App.local.coverFor;
+  if (App.mode === 'local') return true;
   return v.turn === v.you;
 }
 function onSquare(x, y) {
@@ -420,7 +424,6 @@ function onSquare(x, y) {
   const p = v.board[y][x];
   if (App.sel && App.targets.some(([a, b]) => a === x && b === y)) {
     const from = App.sel; App.sel = null; App.targets = [];
-    App.ghosts.delete(x + ',' + y);
     if (App.mode === 'local') localMove(from, [x, y]);
     else { send({ t: 'move', from, to: [x, y] }); render(); }
     return;
@@ -429,35 +432,20 @@ function onSquare(x, y) {
     if (App.sel && App.sel[0] === x && App.sel[1] === y) { App.sel = null; App.targets = []; }
     else {
       App.sel = [x, y];
-      App.targets = v.blind ? XQ.blindTargets(v.board, x, y) : XQ.legalMovesFrom(v.board, x, y);
-      if (!v.blind && App.targets.length === 0) toast('Quân này không có nước đi hợp lệ', 'warn');
+      // quân úp đi theo loại quân của ô nó đang đứng – client tính được nước hợp lệ mà không cần biết danh tính
+      App.targets = XQ.legalMovesFrom(v.board, x, y);
+      if (App.targets.length === 0) toast('Quân này không có nước đi hợp lệ', 'warn');
     }
   } else { App.sel = null; App.targets = []; }
-  render();
-}
-function toggleGhost(x, y) {
-  const v = App.view;
-  if (!v || !v.blind || v.status === 'over' || v.board[y][x]) return;
-  const k = x + ',' + y;
-  if (App.ghosts.has(k)) App.ghosts.delete(k); else App.ghosts.add(k);
   render();
 }
 const sqFromEvent = (e) => {
   const t = e.target.closest && e.target.closest('.sq');
   return t ? [Number(t.dataset.x), Number(t.dataset.y)] : null;
 };
-let pressTimer = null, longPressed = false;
 svg.addEventListener('click', (e) => {
-  if (longPressed) { longPressed = false; return; }
   const s = sqFromEvent(e); if (s) onSquare(s[0], s[1]);
 });
-svg.addEventListener('contextmenu', (e) => { e.preventDefault(); const s = sqFromEvent(e); if (s) toggleGhost(s[0], s[1]); });
-svg.addEventListener('touchstart', (e) => {
-  const s = sqFromEvent(e); if (!s) return;
-  longPressed = false;
-  pressTimer = setTimeout(() => { longPressed = true; toggleGhost(s[0], s[1]); }, 550);
-}, { passive: true });
-['touchend', 'touchmove', 'touchcancel'].forEach((ev) => svg.addEventListener(ev, () => clearTimeout(pressTimer), { passive: true }));
 
 /* ================== Nút bấm ================== */
 function segInit(id, key, onChange) {
@@ -468,21 +456,21 @@ function segInit(id, key, onChange) {
 }
 segInit('colorSeg', 'color');
 segInit('modeSeg', 'mode', (v) => {
-  $('modeHint').textContent = v === 'blind'
-    ? 'Cờ mù: mỗi bên chỉ thấy quân mình, quân địch ẩn cho tới khi bị bắt.'
-    : 'Hai bên thấy toàn bộ bàn cờ.';
+  $('modeHint').textContent = v === 'up'
+    ? 'Cờ úp: 15 quân mỗi bên bị xáo trộn và úp mặt (chỉ Tướng ngửa). Quân úp đi theo vị trí đứng, đi xong thì lật.'
+    : 'Cờ tướng truyền thống.';
 });
 const getName = () => { const n = $('nameInput').value.trim(); localStorage.setItem('xq-name', n); return n; };
 $('nameInput').value = localStorage.getItem('xq-name') || '';
-$('createBtn').onclick = () => send({ t: 'create', name: getName(), color: App.createOpts.color, blind: App.createOpts.mode === 'blind' });
+$('createBtn').onclick = () => send({ t: 'create', name: getName(), color: App.createOpts.color, variant: App.createOpts.mode === 'up' ? 'up' : 'normal' });
 $('joinBtn').onclick = () => {
   const code = $('codeInput').value.trim().toUpperCase();
   if (code.length < 4) return toast('Nhập mã phòng (5 ký tự)', 'warn');
   send({ t: 'join', code, name: getName() });
 };
 $('codeInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('joinBtn').click(); });
-$('localBtn').onclick = () => startLocal(false);
-$('localBlindBtn').onclick = () => startLocal(true);
+$('localBtn').onclick = () => startLocal('normal');
+$('localUpBtn').onclick = () => startLocal('up');
 
 $('flipBtn').onclick = () => { App.userFlip = true; App.flip = !App.flip; render(); };
 $('swapBtn').onclick = () => send({ t: 'swap' });
@@ -500,14 +488,14 @@ $('declineDraw').onclick = () => send({ t: 'declineDraw' });
 $('undoBtn').onclick = () => {
   const L = App.local; if (!L) return;
   const hist = L.game.history.slice(0, -1);
-  const g = new XQ.Game();
+  const g = new XQ.Game({ variant: L.variant, board: L.game.startBoard }); // cùng thế xáo trộn ban đầu
   for (const m of hist) g.move(m.from, m.to);
-  L.game = g; L.coverFor = L.blind ? g.turn : null;
+  L.game = g;
   App.prevMoveCount = hist.length; refreshLocal();
 };
 $('rematchBtn').onclick = () => {
   if (App.mode === 'online') send({ t: 'rematch' });
-  else startLocal(App.local.blind);
+  else startLocal(App.local.variant);
 };
 $('leaveBtn').onclick = () => {
   if (App.mode === 'online') {
